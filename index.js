@@ -22,6 +22,12 @@ const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology:
 function generateQuestionScene() {
   const scene = new Scene("start_singleplay")
 
+  scene.action("cancel", async ctx => {
+    ctx.scene.leave()
+    ctx.deleteMessage()
+    await showMenu(ctx)
+  })
+
   scene.on("message", async ctx => {
     const userId = ctx.from.id
 
@@ -31,7 +37,7 @@ function generateQuestionScene() {
 
       const answer = +ctx.message.text
       if (isNaN(answer)) return msg.send(userId, `Так отвечать нельзя! Попробуй ещё раз`)
-      
+
       const result = thisPlayData.first +
         thisPlayData.second
       const success = result == answer
@@ -45,27 +51,38 @@ function generateQuestionScene() {
       if (success) successAnswers++
 
       if (isEnd) {
-        next = `Конец! Твои результаты: ${successAnswers}/5`
+        time = Math.floor((Date.now() - user.startTime) / 1000)
+        next = `Конец! Твои результаты: ${successAnswers}/5\nЗаняло времени: ${time} сек.`
       } else {
         thisPlayData = singlePlayData[lastSinglePlayQuestion]
         next = `${lastSinglePlayQuestion + 1} вопрос:\n<b>
 ${thisPlayData.first}+${thisPlayData.second}=?</b>`
       }
 
+      const extra = isEnd ? m.build([m.cbb("◀️ Назад", "backToMenu")]) : {}
       if (success) {
-        msg.send(userId, `🎉 Верно! ${next}`)
+        msg.send(userId, `🎉 Верно!\n${next}`, extra)
       } else {
-        msg.send(userId, `👎 Неверно! Верный ответ: ${result}. ${next}`)
+        msg.send(userId, `👎 Неверно! Верный ответ: ${result}.\n${next}`, extra)
       }
 
       await users.updateOne({ userId }, {
         $set: {
           lastSinglePlayQuestion,
           successAnswers
+        },
+        $push: {
+          history: {
+            $each: [
+              ctx.message.message_id,
+              ctx.message.message_id + 1
+            ]
+          }
         }
       })
 
-      ctx.scene.reenter()
+      if (isEnd) ctx.scene.leave()
+      else ctx.scene.reenter()
     }, () => basicFailCallback(ctx))
   })
 
@@ -79,27 +96,6 @@ const stage = new Stage([
 bot.use(session())
 bot.use(stage.middleware())
 
-/* 
-  TODO: Одиночная игра
-
-  * При попадании пользователя в одиночную игру:
-    * Генерируются 5 вопросов и сохраняются в базу
-      * Вопросы генерируются на примере https://codepen.io/DegreetPro/pen/oNzbxJL?editors=1010
-    * Первый вопрос выводится пользователю
-      * Когда пользователь дает ответ
-        * Если ответ верный
-          * сообщить пользователю о том, что он ответил верно
-          * перейти к след. шагу
-          * добавить 1 бал в бд
-        * Иначе
-          * сообщить пользователю о том, что он ответил неверно
-          * сообщить пользователю верный результат
-          * перейти к след. шагу
-    * Когда кончаются вопросы
-      * Вывести пользователю резултаты:
-        * Пример: 1/5
-*/
-
 bot.command("start", async ctx => {
   const userId = ctx.from.id
 
@@ -112,12 +108,35 @@ bot.command("start", async ctx => {
       userId,
       wins: 0,
       losses: 0,
-      gamesPlayed: 0
+      gamesPlayed: 0,
+      history: []
     })
   })
 })
 
-bot.action("menu", async ctx => {
+bot.action("backToMenu", async ctx => {
+  const userId = ctx.from.id
+
+  check.candidate({ userId }, async user => {
+    user.history.forEach(id => {
+      bot.telegram.deleteMessage(userId, id)
+    })
+
+    await users.updateOne({ userId }, {
+      $inc: {
+        gamesPlayed: 1
+      },
+      $set: {
+        history: []
+      }
+    })
+
+    await showMenu(ctx)
+  }, () => basicFailCallback(ctx))
+})
+
+bot.action("menu", showMenu)
+async function showMenu(ctx) {
   const userId = ctx.from.id
 
   check.candidate({ userId }, async user => {
@@ -133,7 +152,7 @@ bot.action("menu", async ctx => {
       ]
     ))
   }, () => basicFailCallback(ctx))
-})
+}
 
 bot.action("play", async ctx => {
   const userId = ctx.from.id
@@ -171,19 +190,23 @@ bot.action("single_play", async ctx => {
       })
     }
 
+    let msgId
+    msg.delLast(ctx)
+    await msg.send(userId, `📕 1 пример:\n<b>${singlePlayData[0].first}+${singlePlayData[0].second}=?</b>`, m.build(
+      [
+        m.cbb("❌ Отмена", "cancel")
+      ]
+    ), message => msgId = message.message_id)
+
     await users.updateOne({ userId }, {
       $set: {
         singlePlayData,
         lastSinglePlayQuestion: 0,
-        successAnswers: 0
+        successAnswers: 0,
+        history: [msgId],
+        startTime: Date.now()
       }
     })
-
-    msg.editLast(ctx, `📕 1 пример:\n<b>${singlePlayData[0].first}+${singlePlayData[0].second}=?</b>`, m.build(
-      [
-        m.cbb("❌ Отмена", "cancel")
-      ]
-    ))
 
     ctx.scene.enter("start_singleplay")
   }, () => basicFailCallback(ctx))

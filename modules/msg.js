@@ -1,6 +1,6 @@
 module.exports = {
-  send(id, msg, moreExtra) {
-    bot.telegram.sendMessage(id, msg, { parse_mode: "HTML", ...moreExtra })
+  async send(id, msg, moreExtra, then) {
+    await bot.telegram.sendMessage(id, msg, { parse_mode: "HTML", ...moreExtra }).then(then)
   },
 
   editLast(ctx, msg, moreExtra) {
