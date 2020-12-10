@@ -10,6 +10,7 @@ const check = require("./modules/check.js")
 const basicFailCallback = require("./modules/basicFailCallback.js")
 const menu = require("./modules/menu.js")
 const rnd = require("./modules/rnd.js")
+const generatePlayData = require("./modules/generatePlayData")
 dotenv.config()
 
 const dbName = "math-leader-bot"
@@ -45,7 +46,7 @@ function generateQuestionScene() {
 
       lastSinglePlayQuestion++
 
-      const isEnd = lastSinglePlayQuestion >= 4
+      const isEnd = lastSinglePlayQuestion >= 5
       let next
 
       if (success) successAnswers++
@@ -89,8 +90,66 @@ ${thisPlayData.first}+${thisPlayData.second}=?</b>`
   return scene
 }
 
+function generateMultiplayerScene() {
+  const scene = new Scene("multiplayer")
+
+  scene.enter(async ctx => {
+    const userId = ctx.from.id
+
+    check.candidate({ userId }, async user => {
+      msg.editLast(ctx, `🌐 <b>Сетевая игра</b>\nВведите ID участника`, m.build(
+        [m.cbb("❌ Отменить", "cancel")]))
+    }, () => basicFailCallback(ctx))
+  })
+
+  scene.on("message", async ctx => {
+    const userId = ctx.from.id
+
+    check.candidate({ userId }, async user => {
+      const player2Id = +ctx.message.text
+
+      check.candidate({ userId: player2Id }, async () => {
+        msg.send(userId, `
+Пользователю успешно был отправлен вызов.
+        `)
+
+        msg.send(player2Id, `
+🗞 Новый вызов от <b>${userId}</b>!
+О сопернике:
+Побед: ${user.wins}
+Поражений: ${user.losses}
+Сыграно игр: ${user.gamesPlayed}
+        `, m.build(
+          [
+            [
+              m.cbb("✅ Принять", `accept_${userId}`),
+              m.cbb("Отклонить ❌", `reject_${userId}`),
+            ]
+          ]
+        ))
+
+        ctx.scene.leave()
+        await showMenu(ctx)
+      }, () => {
+        msg.editLast(ctx, `🌐 <b>Сетевая игра</b>\nНе найден участник с id <b>${player2Id}</b>.
+Попробуйте ещё раз.`, m.build(
+          [m.cbb("❌ Отменить", "cancel")]))
+      })
+    }, () => basicFailCallback(ctx))
+  })
+
+  scene.action("cancel", async ctx => {
+    ctx.scene.leave()
+    msg.delLast(ctx)
+    await showMenu(ctx)
+  })
+
+  return scene
+}
+
 const stage = new Stage([
-  generateQuestionScene()
+  generateQuestionScene(),
+  generateMultiplayerScene()
 ])
 
 bot.use(session())
@@ -172,27 +231,42 @@ bot.action("play", async ctx => {
   }, () => basicFailCallback(ctx))
 })
 
+bot.action(/accept_(.*)/, async ctx => {
+  const player1Id = +ctx.match[1]
+  const player2Id = ctx.from.id
+
+  const playData = generatePlayData()
+
+  await users.updateMany({
+    userId: [player2Id, player1Id]
+  }, {
+    $set: {
+      multiplayerPlayData: playData,
+      lastMultiplayerQuestion: 0,
+      successMultiplayerAnswers: 0,
+      startTime: Date.now()
+    }
+  })
+
+  msg.send(player1Id, `✅ Ваш вызов для игрока <b>${player2Id}</b> был принят!\nОжидайте, пока игрок пройдет тест.`)
+  msg.editLast(ctx, `✅ Вы успешно приняли вызов!`)
+
+  setTimeout(() => {
+    msg.send(player2Id, `
+❓ Готовы начинать?
+    `, m.build([m.cbb("Да!", "start_quiz_player_2")]))
+  }, 1000)
+})
+
 bot.action("single_play", async ctx => {
   const userId = ctx.from.id
 
   check.candidate({ userId }, async user => {
-    const singlePlayData = [
-      {
-        first: rnd(100, 500),
-        second: rnd(100, 500)
-      }
-    ]
-
-    for (let i = 1; singlePlayData.length != 5; i++) {
-      singlePlayData.push({
-        first: rnd(100, 500),
-        second: rnd(100, 500)
-      })
-    }
+    const playData = generatePlayData()
 
     let msgId
     msg.delLast(ctx)
-    await msg.send(userId, `📕 1 пример:\n<b>${singlePlayData[0].first}+${singlePlayData[0].second}=?</b>`, m.build(
+    await msg.send(userId, `📕 1 пример:\n<b>${playData[0].first}+${playData[0].second}=?</b>`, m.build(
       [
         m.cbb("❌ Отмена", "cancel")
       ]
@@ -200,7 +274,7 @@ bot.action("single_play", async ctx => {
 
     await users.updateOne({ userId }, {
       $set: {
-        singlePlayData,
+        singlePlayData: playData,
         lastSinglePlayQuestion: 0,
         successAnswers: 0,
         history: [msgId],
@@ -209,6 +283,14 @@ bot.action("single_play", async ctx => {
     })
 
     ctx.scene.enter("start_singleplay")
+  }, () => basicFailCallback(ctx))
+})
+
+bot.action("multiplayer", async ctx => {
+  const userId = ctx.from.id
+
+  check.candidate({ userId }, async user => {
+    ctx.scene.enter("multiplayer")
   }, () => basicFailCallback(ctx))
 })
 
